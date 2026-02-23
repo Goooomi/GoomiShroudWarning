@@ -9,7 +9,7 @@ end
 
 local ShroudWarning = {
     name = "Shroud Warning",
-    version = "1.0",
+    version = "1.1",
 }
 
 GoomiShroudWarningDB = GoomiShroudWarningDB or {}
@@ -17,11 +17,16 @@ GoomiShroudWarningDB = GoomiShroudWarningDB or {}
 local SHROUD_SPELL_ID = 114018
 local SHROUD_BASE_DURATION = 15
 local SHROUD_TALENTED_DURATION = 20
+local ROGUE_CLASS_ID = 4
 
 local defaults = {
     countdownStart = 10,        -- 0 = use full buff duration, otherwise start at this number
     countdownOffset = 0.7,      -- Announce numbers this many seconds early for safety buffer
     chatChannel = "SAY",        -- SAY, YELL, PARTY, or RAID
+
+    -- Instance filtering (both false = run everywhere)
+    instanceDungeon = false,
+    instanceRaid = false,
 
     -- Messages
     activationMsg = "Shroud Activated! (%ds)",
@@ -36,6 +41,7 @@ local buffExpirationTime = 0
 local lastAnnouncedSecond = 0
 local countdownFrame = nil
 local countdownStartFrom = 0
+local isRogue = false
 
 -- ========================
 -- Database
@@ -62,18 +68,51 @@ local function InitDB()
 end
 
 -- ========================
+-- Class & Instance Checks
+-- ========================
+local function CheckIsRogue()
+    local _, _, classID = UnitClass("player")
+    return classID == ROGUE_CLASS_ID
+end
+
+local function IsAllowedInstance()
+    local db = GoomiShroudWarningDB
+
+    -- Both unchecked = run everywhere
+    if not db.instanceDungeon and not db.instanceRaid then
+        return true
+    end
+
+    local inInstance, instanceType = IsInInstance()
+    if not inInstance then return false end
+
+    if db.instanceDungeon and instanceType == "party" then return true end
+    if db.instanceRaid and instanceType == "raid" then return true end
+
+    return false
+end
+
+-- ========================
 -- Countdown Logic
 -- ========================
 
 countdownFrame = CreateFrame("Frame")
 countdownFrame:Hide()
 
+local eventFrame -- forward declare for use in Stop/Start
+
 local function StopCountdown()
     countdownActive = false
+    shroudBuffActive = false
     buffExpirationTime = 0
     lastAnnouncedSecond = 0
     countdownStartFrom = 0
     countdownFrame:Hide()
+
+    -- Unregister UNIT_AURA when we no longer need it
+    if eventFrame then
+        eventFrame:UnregisterEvent("UNIT_AURA")
+    end
 end
 
 local function Say(msg)
@@ -91,7 +130,7 @@ countdownFrame:SetScript("OnUpdate", function(self, elapsed)
         return
     end
 
-    local offset = GoomiShroudWarningDB.countdownOffset or 0.5
+    local offset = GoomiShroudWarningDB.countdownOffset or 0.7
     local remaining = buffExpirationTime - GetTime()
     local offsetRemaining = remaining - offset
 
@@ -99,7 +138,6 @@ countdownFrame:SetScript("OnUpdate", function(self, elapsed)
         -- Our countdown is done (buff still has offset time left as safety buffer)
         if GoomiShroudWarningDB.showEnd then Say(GoomiShroudWarningDB.endMsg) end
         StopCountdown()
-        shroudBuffActive = false
         return
     end
 
@@ -114,6 +152,8 @@ end)
 
 local function StartCountdown(expirationTime, totalDuration)
     local db = GoomiShroudWarningDB
+
+    -- Stop any existing countdown first (also unregisters UNIT_AURA)
     StopCountdown()
 
     buffExpirationTime = expirationTime
@@ -138,32 +178,36 @@ local function StartCountdown(expirationTime, totalDuration)
     countdownStartFrom = startFrom
     lastAnnouncedSecond = startFrom + 1
 
+    -- Register UNIT_AURA only while shroud is active (high-frequency event)
+    if eventFrame then
+        eventFrame:RegisterEvent("UNIT_AURA")
+    end
+
     countdownFrame:Show()
 end
 
 -- ========================
 -- Event Handling
 -- ========================
-local eventFrame
 
 local function SetupEvents()
     if eventFrame then return end
+    if not isRogue then return end  -- No events needed for non-rogues
 
     eventFrame = CreateFrame("Frame")
+
+    -- Only register the lightweight spell cast event
+    -- UNIT_AURA is registered/unregistered dynamically during shroud
     eventFrame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
-    eventFrame:RegisterEvent("UNIT_AURA")
-    eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 
     eventFrame:SetScript("OnEvent", function(self, event, ...)
-        if event == "PLAYER_ENTERING_WORLD" then
-            InitDB()
-            return
-        end
-
         if event == "UNIT_SPELLCAST_SUCCEEDED" then
             local unitTarget, castGUID, spellID = ...
             if unitTarget ~= "player" or spellID ~= SHROUD_SPELL_ID then return end
             if countdownActive then return end
+
+            -- Check instance restriction before proceeding
+            if not IsAllowedInstance() then return end
 
             C_Timer.After(0.15, function()
                 if countdownActive then return end
@@ -199,20 +243,8 @@ local function SetupEvents()
             end
 
             if not aura then
-                if countdownActive then
-                    local timeLeft = buffExpirationTime - GetTime()
-                    if timeLeft > 2 then
-                        -- Significant time remaining = cancelled early
-                        StopCountdown()
-                        shroudBuffActive = false
-                    else
-                        -- Natural expiry area
-                        StopCountdown()
-                        shroudBuffActive = false
-                    end
-                else
-                    shroudBuffActive = false
-                end
+                -- Buff gone - stop everything (handles both cancel and natural expiry)
+                StopCountdown()
             end
             return
         end
@@ -224,17 +256,22 @@ end
 -- ========================
 function ShroudWarning:OnLoad()
     InitDB()
-    SetupEvents()
+    isRogue = CheckIsRogue()
+    if isRogue then
+        SetupEvents()
+    end
 end
 
 function ShroudWarning:OnEnable()
     InitDB()
-    SetupEvents()
+    isRogue = CheckIsRogue()
+    if isRogue then
+        SetupEvents()
+    end
 end
 
 function ShroudWarning:OnDisable()
     StopCountdown()
-    shroudBuffActive = false
     if eventFrame then
         eventFrame:UnregisterAllEvents()
         eventFrame = nil
@@ -319,6 +356,16 @@ function ShroudWarning:CreateSettings(parentFrame)
     desc:SetJustifyH("LEFT")
     desc:SetText("Announces a countdown in /say when you cast Shroud of Concealment. Automatically detects talented duration (15s or 20s).")
     desc:SetTextColor(0.7, 0.7, 0.7, 1)
+
+    -- Non-rogue notice
+    if not isRogue then
+        local notice = parentFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        notice:SetPoint("TOPLEFT", 0, -65)
+        notice:SetWidth(550)
+        notice:SetJustifyH("LEFT")
+        notice:SetText("This character is not a Rogue. The addon is inactive and using no resources.")
+        notice:SetTextColor(1, 0.5, 0.2, 1)
+    end
 
     local yOffset = 75
 
@@ -492,8 +539,7 @@ function ShroudWarning:CreateSettings(parentFrame)
     local channelDropdown = CreateFrame("Frame", "GoomiShroudChannelDropdown", channelContainer, "UIDropDownMenuTemplate")
     channelDropdown:SetPoint("LEFT", 80, 0)
     UIDropDownMenu_SetWidth(channelDropdown, 65)
-	GoomiShroudChannelDropdownText:SetJustifyH("CENTER")
-
+    GoomiShroudChannelDropdownText:SetJustifyH("CENTER")
 
     -- Set initial text
     local currentLabel = "/say"
@@ -519,6 +565,54 @@ function ShroudWarning:CreateSettings(parentFrame)
     end)
 
     yOffset = yOffset + 50
+
+    -- ==============================
+    -- Section: Instance Filtering
+    -- ==============================
+    local instanceHeader = parentFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    instanceHeader:SetPoint("TOPLEFT", 0, -yOffset)
+    instanceHeader:SetText("Instance Filtering")
+    instanceHeader:SetTextColor(1, 1, 1, 1)
+    yOffset = yOffset + 25
+
+    local instanceContainer = CreateFrame("Frame", nil, parentFrame)
+    instanceContainer:SetSize(600, 60)
+    instanceContainer:SetPoint("TOPLEFT", 0, -yOffset)
+    instanceContainer.bg = instanceContainer:CreateTexture(nil, "BACKGROUND")
+    instanceContainer.bg:SetAllPoints()
+    instanceContainer.bg:SetColorTexture(0.1, 0.1, 0.1, 0.5)
+    CreateBorder(instanceContainer, 1, 0.2, 0.2, 0.2, 0.5)
+
+    local dungeonCB = CreateFrame("CheckButton", nil, instanceContainer, "UICheckButtonTemplate")
+    dungeonCB:SetPoint("TOPLEFT", 10, -8)
+    dungeonCB:SetSize(24, 24)
+    dungeonCB:SetChecked(db.instanceDungeon)
+    dungeonCB.text:SetText("Dungeons Only")
+    dungeonCB.text:SetPoint("LEFT", dungeonCB, "RIGHT", 5, 0)
+    dungeonCB.text:SetTextColor(1, 1, 1, 1)
+    dungeonCB.text:SetFontObject("GameFontNormal")
+    dungeonCB:SetScript("OnClick", function(self)
+        db.instanceDungeon = self:GetChecked() and true or false
+    end)
+
+    local raidCB = CreateFrame("CheckButton", nil, instanceContainer, "UICheckButtonTemplate")
+    raidCB:SetPoint("LEFT", dungeonCB.text, "RIGHT", 30, 0)
+    raidCB:SetSize(24, 24)
+    raidCB:SetChecked(db.instanceRaid)
+    raidCB.text:SetText("Raids Only")
+    raidCB.text:SetPoint("LEFT", raidCB, "RIGHT", 5, 0)
+    raidCB.text:SetTextColor(1, 1, 1, 1)
+    raidCB.text:SetFontObject("GameFontNormal")
+    raidCB:SetScript("OnClick", function(self)
+        db.instanceRaid = self:GetChecked() and true or false
+    end)
+
+    local instanceNote = instanceContainer:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    instanceNote:SetPoint("BOTTOMLEFT", 10, 5)
+    instanceNote:SetText("Both unchecked = active everywhere. Check one or both to restrict.")
+    instanceNote:SetTextColor(0.5, 0.5, 0.5, 1)
+
+    yOffset = yOffset + 70
 
     -- ==============================
     -- Section: Messages
@@ -617,6 +711,8 @@ function ShroudWarning:CreateSettings(parentFrame)
         offsetSlider:SetValue(db.countdownOffset)
         offsetBox:SetText(string.format("%.1f", db.countdownOffset))
         UIDropDownMenu_SetText(channelDropdown, "/say")
+        dungeonCB:SetChecked(db.instanceDungeon)
+        raidCB:SetChecked(db.instanceRaid)
         activationCB:SetChecked(db.showActivation)
         activationEB:SetText(db.activationMsg)
         endCB:SetChecked(db.showEnd)
