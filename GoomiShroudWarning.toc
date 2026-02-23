@@ -3,9 +3,9 @@
 ## Notes: Countdown timer in /say when Shroud of Concealment is activated
 ## Author: Goomi
 ## Version: 1.0.0
-## X-Curse-Project-ID:
-## RequiredDeps: GoomiUI
+## X-Curse-Project-ID: 1469916
 ## Category: Goomi|cFF3AC2D6U|r|cFFEE2D40I|r
+## RequiredDeps: GoomiUI
 ## IconTexture: Interface\Icons\Ability_Rogue_ShroudOfConcealment
 ## SavedVariables: GoomiShroudWarningDB
 
