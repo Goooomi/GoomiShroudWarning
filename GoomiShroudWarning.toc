@@ -1,0 +1,10 @@
+## Interface: 120000
+## Title: GoomiShroudWarning
+## Notes: Countdown timer in /say when Shroud of Concealment is activated
+## Author: Goomi
+## Version: 1.0.0
+## X-Curse-Project-ID:
+## RequiredDeps: GoomiUI
+## SavedVariables: GoomiShroudWarningDB
+
+goomishroudwarning.lua
