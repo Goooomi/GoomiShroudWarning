@@ -5,7 +5,7 @@
 ## Version: 1.0.0
 ## X-Curse-Project-ID:
 ## RequiredDeps: GoomiUI
-## Category: GoomiUI
+## Category: Goomi|cFF3AC2D6U|r|cFFEE2D40I|r
 ## IconTexture: Interface\Icons\Ability_Rogue_ShroudOfConcealment
 ## SavedVariables: GoomiShroudWarningDB
 
